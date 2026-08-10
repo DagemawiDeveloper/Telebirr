@@ -1,7 +1,8 @@
 <?php
-require_once('applyFabricTokenService.php');
-require_once('./utils/tool.php');
-require_once('./config/env.php');
+
+require_once __DIR__ . '/applyFabricTokenService.php';
+require_once dirname(__DIR__) . '/utils/tool.php';
+require_once dirname(__DIR__) . '/config/env.php';
 
 class CreateOrderService
 {
@@ -13,162 +14,159 @@ class CreateOrderService
     public $merchantCode;
     public $notify_path;
 
-    function __construct($baseUrl, $req, $fabricAppId, $appSecret, $merchantAppId, $merchantCode)
+    public function __construct($baseUrl, $req, $fabricAppId, $appSecret, $merchantAppId, $merchantCode)
     {
-        $this->BASE_URL = $baseUrl;
+        $this->BASE_URL = rtrim($baseUrl, '/');
         $this->req = $req;
         $this->fabricAppId = $fabricAppId;
         $this->appSecret = $appSecret;
         $this->merchantAppId = $merchantAppId;
         $this->merchantCode = $merchantCode;
-        $this->notify_path = "http://"  . $_SERVER['SERVER_NAME'];
+
+        $configuredNotifyUrl = getenv('TELEBIRR_NOTIFY_URL');
+        if ($configuredNotifyUrl) {
+            $this->notify_path = $configuredNotifyUrl;
+        } else {
+            $serverName = isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : 'localhost';
+            $this->notify_path = 'https://' . $serverName . '/api/payment.php';
+        }
     }
+
     /**
-     * @Purpose: Creating Order
-     *
-     * @Param: no parameters it takes from the constructor
-     * @Return: rawRequest|String
+     * Create a payment order and return the raw request expected by the client.
      */
-    function createOrder()
+    public function createOrder()
     {
         $title = $this->req->title;
         $amount = $this->req->amount;
 
-        $applyFabricTokenResult = new ApplyFabricToken(
+        $tokenService = new ApplyFabricToken(
             $this->BASE_URL,
             $this->fabricAppId,
             $this->appSecret,
             $this->merchantAppId
         );
 
-        $result = json_decode($applyFabricTokenResult->applyFabricToken());
+        $tokenResponse = json_decode($tokenService->applyFabricToken());
 
-        $fabricToken = $result->token;
+        if (!isset($tokenResponse->token) || !$tokenResponse->token) {
+            throw new RuntimeException('Telebirr token response did not contain a token.');
+        }
 
-        $createOrderResult = $this->requestCreateOrder($fabricToken, $title, $amount);
+        $createOrderResponse = json_decode(
+            $this->requestCreateOrder($tokenResponse->token, $title, $amount)
+        );
 
-        $prepayId = json_decode($createOrderResult)->biz_content->prepay_id;
+        if (!isset($createOrderResponse->biz_content->prepay_id)) {
+            throw new RuntimeException('Telebirr pre-order response did not contain a prepay_id.');
+        }
 
-        $rawRequest = $this->createRawRequest($prepayId);
-
-        echo trim((string)$rawRequest);
+        echo trim((string) $this->createRawRequest($createOrderResponse->biz_content->prepay_id));
     }
 
     /**
-     * @Purpose: Requests CreateOrder
-     *
-     * @Param: fabricToken|String title|string amount|string
-     * @Return: String | Boolean
+     * Send the signed pre-order request to the Telebirr gateway.
      */
-
-    function requestCreateOrder($fabricToken, $title, $amount)
+    public function requestCreateOrder($fabricToken, $title, $amount)
     {
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->BASE_URL . '/payment/v1/merchant/preOrder');
-        curl_setopt($ch, CURLOPT_POST, 1);
 
-        // Header parameters
         $headers = array(
-            "Content-Type: application/json",
-            "X-APP-Key: " . $this->fabricAppId,
-            "Authorization: " . $fabricToken
+            'Content-Type: application/json',
+            'X-APP-Key: ' . $this->fabricAppId,
+            'Authorization: ' . $fabricToken,
         );
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 
-        // Body parameters
-        $payload = $this->createRequestObject($title, $amount);
+        curl_setopt_array($ch, array(
+            CURLOPT_URL => $this->BASE_URL . '/payment/v1/merchant/preOrder',
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => $this->createRequestObject($title, $amount),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
+        ));
 
-        $data = $payload;
+        $response = curl_exec($ch);
 
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        if (false === $response) {
+            $message = curl_error($ch);
+            curl_close($ch);
+            throw new RuntimeException('Unable to create Telebirr order: ' . $message);
+        }
 
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, FALSE); // for dev environment only
-
-        $server_output = curl_exec($ch);
-
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        return $server_output;
+        if ($status < 200 || $status >= 300) {
+            throw new RuntimeException('Telebirr order request failed with HTTP ' . $status . '.');
+        }
+
+        return $response;
     }
-    /**
-     * @Purpose: Creating a new merchantOrderId
-     *
-     * @Param: no parameters
-     * @Return: returns a string format of time (UTC)
-     */
-    function createMerchantOrderId_()
+
+    public function createMerchantOrderId_()
     {
-        return (string)time();
+        return (string) time();
     }
+
     /**
-     * @Purpose: Creating Request Object
-     *
-     * @Param: title|String and amount|String
-     * @Return: Json encoded string
+     * Build and sign the Telebirr pre-order object.
      */
-    function createRequestObject($title, $amount)
+    public function createRequestObject($title, $amount)
     {
-        $req = array(
+        $request = array(
             'nonce_str' => createNonceStr(),
             'method' => 'payment.preorder',
             'timestamp' => createTimeStamp(),
             'version' => '1.0',
-            'biz_content' => [],
+            'biz_content' => array(),
         );
 
-        $biz = array(
-            // 'notify_url' => 'https://www.google.com',
-            'notify_url' => $this->notify_path . '/api/payment.php', // set your notify end point
-            'business_type' => 'BuyGoods',
-            'trade_type' => 'InApp',
+        $request['biz_content'] = array(
+            'notify_url' => $this->notify_path,
+            'business_type' => getenv('TELEBIRR_BUSINESS_TYPE') ?: 'BuyGoods',
+            'trade_type' => getenv('TELEBIRR_TRADE_TYPE') ?: 'InApp',
             'appid' => $this->merchantAppId,
             'merch_code' => $this->merchantCode,
             'merch_order_id' => $this->createMerchantOrderId_(),
             'title' => $title,
             'total_amount' => $amount,
-            'trans_currency' => 'ETB',
-            'timeout_express' => '120m',
-            'payee_identifier' => '220311',
-            'payee_identifier_type' => '04',
-            'payee_type' => '5000',
-            // 'redirect_url' => $this->path . '/app/product_list.html'
+            'trans_currency' => getenv('TELEBIRR_CURRENCY') ?: 'ETB',
+            'timeout_express' => getenv('TELEBIRR_TIMEOUT_EXPRESS') ?: '120m',
+            'payee_identifier' => getenv('TELEBIRR_PAYEE_IDENTIFIER') ?: '',
+            'payee_identifier_type' => getenv('TELEBIRR_PAYEE_IDENTIFIER_TYPE') ?: '',
+            'payee_type' => getenv('TELEBIRR_PAYEE_TYPE') ?: '',
         );
 
-        $req['biz_content'] = $biz;
-        $req['sign_type'] = 'SHA256WithRSA';
+        $request['sign_type'] = 'SHA256WithRSA';
+        $request['sign'] = sign($request);
 
-        $req['sign'] = sign($req);
-
-        return json_encode($req);
+        return json_encode($request);
     }
-    /**
-     * @Purpose: Create a rawRequest string for H5 page to start pay
-     *
-     * @Param: prepayId returned from the createRequestObject
-     * @Return: rawRequest|string
-     */
-    function createRawRequest($prepayId)
-    {
-        $maps = array(
-            "appid" => $this->merchantAppId,
-            "merch_code" => $this->merchantCode,
-            "nonce_str" => createNonceStr(),
-            "prepay_id" => $prepayId,
-            "timestamp" => createTimeStamp(),
-            "sign_type" => "SHA256WithRSA"
-        );
-        
-        foreach ($maps as $map => $m) {
-                $rawRequest .= $map . '=' . $m."&";
-        }
-        $sign = sign($maps);
-        // order by ascii in array
-        $rawRequest = $rawRequest.'sign='. $sign;
 
-        return $rawRequest;
+    /**
+     * Build the raw request passed to the payment client/H5 flow.
+     */
+    public function createRawRequest($prepayId)
+    {
+        $values = array(
+            'appid' => $this->merchantAppId,
+            'merch_code' => $this->merchantCode,
+            'nonce_str' => createNonceStr(),
+            'prepay_id' => $prepayId,
+            'timestamp' => createTimeStamp(),
+            'sign_type' => 'SHA256WithRSA',
+        );
+
+        $parts = array();
+        foreach ($values as $key => $value) {
+            $parts[] = $key . '=' . $value;
+        }
+
+        return implode('&', $parts) . '&sign=' . sign($values);
     }
 }
