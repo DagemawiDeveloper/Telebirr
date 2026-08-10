@@ -1,9 +1,14 @@
-<?php 
-// Configuration Variables Set Here
+<?php
+/**
+ * Telebirr runtime configuration.
+ *
+ * Supply these values through server/container environment variables.
+ * Never commit merchant credentials or private keys to the repository.
+ */
 $ENV_Variables = array(
-    "baseUrl" => "https://196.188.120.3:38443/apiaccess/payment/gateway",
-    "fabricAppId" => "c4182ef8-9249-458a-985e-06d191f4d505",
-    "appSecret" => "fad0f06383c6297f545876694b974599",
-    "merchantAppId" => "930231098009602",
-    "merchantCode" =>  "101011"
+    'baseUrl'       => getenv('TELEBIRR_BASE_URL') ?: '',
+    'fabricAppId'   => getenv('TELEBIRR_FABRIC_APP_ID') ?: '',
+    'appSecret'     => getenv('TELEBIRR_APP_SECRET') ?: '',
+    'merchantAppId' => getenv('TELEBIRR_MERCHANT_APP_ID') ?: '',
+    'merchantCode'  => getenv('TELEBIRR_MERCHANT_CODE') ?: '',
 );
