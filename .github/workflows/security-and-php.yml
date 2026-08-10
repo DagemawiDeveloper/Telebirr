@@ -1,0 +1,37 @@
+name: PHP & Security Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+
+      - name: Validate Composer metadata
+        working-directory: Api
+        run: composer validate --no-check-publish
+
+      - name: PHP syntax check
+        run: find Api -type f -name '*.php' -not -path 'Api/vendor/*' -print0 | xargs -0 -n1 php -l
+
+      - name: Reject tracked private-key material
+        shell: bash
+        run: |
+          if git grep -nE -- 'BEGIN (RSA )?PRIVATE KEY|BEGIN EC PRIVATE KEY'; then
+            echo 'Private key material must not be committed.'
+            exit 1
+          fi
+          echo 'No private-key PEM blocks found in tracked project files.'
