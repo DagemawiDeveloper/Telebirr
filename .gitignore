@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.vscode/
+
+Api/vendor/
+Api/config/private_key.pem
+Api/config/*.key
+Api/config/*.p12
+Api/config/*.pfx
+.env
+.env.*
+!.env.example
+*.log
